@@ -11,6 +11,8 @@
 int
 main(int argc, char *argv[])
 {
+  int count = 0;
+
   setvbuf(stdout, NULL, _IONBF, 0);
   setvbuf(stderr, NULL, _IONBF, 0);
 
@@ -19,6 +21,11 @@ main(int argc, char *argv[])
   if(argc != 2){
     fprintf(stderr, "Usage: %s port\n", argv[0]);
     exit(1);
+  }
+
+  char *count_env = getenv("RPC_COUNT");
+  if(count_env != NULL){
+    count = atoi(count_env);
   }
 
   //jsl_set_debug(2);
