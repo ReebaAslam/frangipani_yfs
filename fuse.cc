@@ -311,13 +311,45 @@
  fuseserver_mkdir(fuse_req_t req, fuse_ino_t parent, const char *name,
       mode_t mode)
  {
- #if 0
-   struct fuse_entry_param e;
-   // You fill this in
-   fuse_reply_entry(req, &e);
- #else
-   fuse_reply_err(req, ENOSYS);
- #endif
+  printf("fuseserver_mkdir %llu %s\n", parent, name);
+  if (!yfs->isdir(parent)) {
+    fuse_reply_err(req, ENOENT);
+    return;
+  }
+
+  //check if directory exists
+  yfs_client::dirinfo din;
+  if( yfs->getdir(parent, din) != yfs_client::OK){
+    fuse_reply_err(req, ENOENT);
+    return;
+  }
+
+  // check if the directory already exists
+  yfs_client::inum inum = yfs->ilookup(parent, name);
+  if (inum == 0) {
+    // create a new directory
+    yfs_client::inum new_inum;
+    yfs_client::status ret = yfs->makedir(parent, name, new_inum);
+    
+    if (ret != yfs_client::OK) {
+      fuse_reply_err(req, ENOENT);
+    }
+    struct fuse_entry_param e;
+
+    e.ino = new_inum;
+    e.attr_timeout = 0.0;
+    e.entry_timeout = 0.0;
+    ret = getattr(new_inum, e.attr);
+    if (ret != yfs_client::OK) {
+      fuse_reply_err(req, ENOENT);
+      return;
+    }
+    fuse_reply_entry(req, &e);
+  }
+  else{
+    // we will do something here
+    printf("fuseserver_mkdir: directory already exists\n");
+  }
  }
  
  void
@@ -325,9 +357,16 @@
  {
  
    // You fill this in
-   // Success:	fuse_reply_err(req, 0);
-   // Not found:	fuse_reply_err(req, ENOENT);
-   fuse_reply_err(req, ENOSYS);
+   yfs_client::inum inum = yfs->ilookup(parent, name);
+   if (inum != 0) {
+    yfs_client::status ret = yfs->unlink(parent, name);
+    printf("fuseserver_unlink unlink completed %llu %s %d \n", parent, name, ret);
+    if (ret == yfs_client::OK) {
+      fuse_reply_err(req, 0);
+      return;
+    }
+  }
+   fuse_reply_err(req, ENOENT);
  }
  
  void
