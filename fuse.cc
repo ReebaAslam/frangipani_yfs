@@ -169,9 +169,18 @@
     
   }
   else{
-    // we will do something here
+    // File already exists — need to fill `e` properly
     printf("fuseserver_createhelper: file already exists\n");
+    e->ino = inum;
+    yfs_client::status ret = getattr(inum, e->attr);
+    if (ret != yfs_client::OK) {
+      return ret;
+    }
+    e->attr_timeout = 0.0;
+    e->entry_timeout = 0.0;
   }
+  
+
   // You fill this in
    return yfs_client::OK;
  }

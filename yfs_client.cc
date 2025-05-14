@@ -21,6 +21,7 @@ yfs_client::yfs_client(std::string extent_dst, std::string lock_dst)
   {
     ec->put(0x1, "");
   }
+  lc = new lock_client(lock_dst);
 }
 
 
@@ -78,8 +79,9 @@ yfs_client::isdir(inum inum)
 int
 yfs_client::getfile(inum inum, fileinfo &fin)
 {
-  int r = OK;
+  lc->acquire(inum);
 
+  int r = OK;
 
   printf("getfile %016llx\n", inum);
   extent_protocol::attr a;
@@ -94,7 +96,8 @@ yfs_client::getfile(inum inum, fileinfo &fin)
   fin.size = a.size;
   printf("getfile %016llx -> sz %llu\n", inum, fin.size);
 
- release:
+  release:
+  lc->release(inum);
 
   return r;
 }
@@ -102,8 +105,8 @@ yfs_client::getfile(inum inum, fileinfo &fin)
 int
 yfs_client::getdir(inum inum, dirinfo &din)
 {
+  lc -> acquire(inum);
   int r = OK;
-
 
   printf("getdir %016llx\n", inum);
   extent_protocol::attr a;
@@ -114,34 +117,42 @@ yfs_client::getdir(inum inum, dirinfo &din)
   din.atime = a.atime;
   din.mtime = a.mtime;
   din.ctime = a.ctime;
-
- release:
+  release:
+  lc -> release(inum);
   return r;
 }
 
 yfs_client::inum
 yfs_client::ilookup(inum di, std::string name)
 {
+  lc -> acquire(di);
   inum inum = 0;
   std::string buf;
+
+  std::istringstream ist;
+  std::string file_name;
+  unsigned long long file_inum;
 
   // Check if di is a directory
   if (!isdir(di)) {
     printf("ilookup: %016llx is not a directory\n", di);
-    return inum;
+    goto release;
   }
   if (ec->get(di, buf) != extent_protocol::OK) {
-    return inum;
+    printf("ilookup: get failed for %016llx\n", di);
+    goto release;
   }
-  std::istringstream ist(buf);
-  std::string file_name;
-  unsigned long long file_inum;
+
+  ist.str(buf);
   while (ist >> file_inum >> file_name) {
     if (file_name == name) {
       inum = file_inum;
+      printf("ilookup: found %s in %016llx\n", name.c_str(), di);
       break;
     }
   }
+  release:
+  lc -> release(di);
   return inum;
 }
 
@@ -154,31 +165,43 @@ yfs_client::createfile(inum parent, const char *name, inum &file_inum){
 yfs_client::status 
 yfs_client::add_entry_to_filesystem(inum parent, inum &entry_inum, const char *name, bool is_file)
 {
-  // create a random inum for the new file
-  entry_inum = generate_unique_inum(is_file);
-
-  printf("add_entry_to_filesystem %016llx %s\n", entry_inum, name);
-  
-  // append "entry_inum name \n" to the parent directory
+  lc->acquire(parent); // Lock parent first
   std::string buf;
-  int ret;
-  ret = ec->get(parent, buf);
-  if (ret != extent_protocol::OK)
-  {
+  int ret = ec->get(parent, buf);
+  if (ret != extent_protocol::OK) {
+    lc->release(parent);
     return ret;
   }
+
+  // // Check if file already exists
+  // std::istringstream ist(buf);
+  // std::string existing_inum, existing_name;
+  // while (ist >> existing_inum >> existing_name) {
+  //   if (existing_name == name) {
+  //     lc->release(parent);
+  //     return IOERR; // File exists
+  //   }
+  // }
+
+  // Safe to proceed, generate new inum
+  entry_inum = generate_unique_inum(is_file);
+  lc->acquire(entry_inum);
+
   std::ostringstream ost;
   ost << entry_inum << " " << name << "\n";
   buf += ost.str();
+
   ret = ec->put(parent, buf);
-  if (ret != extent_protocol::OK)
-  {
-    return ret;
+  if (ret != extent_protocol::OK) {
+    goto release;
   }
-  // create the file with the new inum
-  std::string file_buf = "";
-  ret = ec->put(entry_inum, file_buf);
-  printf("add_entry_to_filesystem completed successfully: %016llx %s\n", entry_inum, name);
+
+  // Create file
+  ret = ec->put(entry_inum, "");
+
+release:
+  lc->release(entry_inum);
+  lc->release(parent);
   return ret;
 }
 
@@ -192,30 +215,38 @@ yfs_client::makedir(inum parent, const char *name, inum &dir_inum)
 yfs_client::status
 yfs_client::readdir(inum dir, std::vector<dirent> &dir_files)
 {
+  lc -> acquire(dir);
   std::string buf;
-  int ret = ec->get(dir, buf);
-  if (ret != extent_protocol::OK) {
-    return ret;
-  }
-  std::istringstream ist(buf);
+  std::istringstream ist;
   dirent e;
   std::string file_inum;
   std::string file_name;
+
+  int ret = ec->get(dir, buf);
+
+  if (ret != extent_protocol::OK) {
+    goto release;
+  }
+
+  ist.str(buf);
   while (ist >> file_inum >> file_name) {
     e.inum = n2i(file_inum);
     e.name = file_name;
     dir_files.push_back(e);
-  }  
-  return OK;
+  }
+  release:
+  lc -> release(dir);
+  return ret;
 }
 
 yfs_client::status
 yfs_client::setsize(inum inum, unsigned long long size)
 {
+  lc -> acquire(inum);
   std::string buf;
   int ret = ec->get(inum, buf);
   if (ret != extent_protocol::OK) {
-    return ret;
+    goto release;
   }
   if (size > buf.size()) {
     buf.resize(size, '\0');
@@ -224,6 +255,9 @@ yfs_client::setsize(inum inum, unsigned long long size)
     buf.resize(size);
   }
   ret = ec->put(inum, buf);
+
+  release:
+  lc -> release(inum);
   return ret;
 }
 
@@ -231,10 +265,11 @@ yfs_client::setsize(inum inum, unsigned long long size)
 yfs_client::status
 yfs_client::write(inum inum, const char *buf, size_t size, off_t off, size_t &bytes_written)
 {
+  lc -> acquire(inum);
   std::string file_buf;
   int ret = ec->get(inum, file_buf);
   if (ret != extent_protocol::OK) {
-    return ret;
+    goto release;
   }
   if (off + size > file_buf.size()) {
     file_buf.resize(off + size, '\0');
@@ -242,68 +277,88 @@ yfs_client::write(inum inum, const char *buf, size_t size, off_t off, size_t &by
   memcpy(&file_buf[off], buf, size);
   ret = ec->put(inum, file_buf);
   if (ret != extent_protocol::OK) {
-    return ret;
+    goto release;
   }
   bytes_written = size;
-  return OK;
+  release:
+  lc -> release(inum);
+  return ret;
 
 }
 
 yfs_client::status
 yfs_client::read(inum inum, std::string &buf, size_t size, off_t off)
 {
+  lc ->acquire(inum);
   int ret = ec->get(inum, buf);
   if (ret != extent_protocol::OK) {
-    return ret;
+    goto release;
   }
   if (off >= buf.size()) {
     buf = "";
-    return OK;
+    ret = OK;
+    goto release;
   }
   if (off + size > buf.size()) {
     size = buf.size() - off;
   }
   buf = buf.substr(off, size);
-  return OK;
+
+  release:
+  lc -> release(inum);
+  return ret;
 }
 
 
 yfs_client::status
 yfs_client::unlink(inum parent, const char *name)
 {
+  lc -> acquire(parent);
   std::string buf;
-  int ret = ec->get(parent, buf);
-  if (ret != extent_protocol::OK) {
-    return ret;
-  }
-  std::istringstream ist(buf);
+
+  std::istringstream ist;
   std::ostringstream ost;
   std::string file_inum;
   std::string file_name;
-  std::string inum_to_remove;
+  std::string inum_to_remove_string;
+  inum inum_to_remove;
+
   bool found = false;
+
+  int ret = ec->get(parent, buf);
+  if (ret != extent_protocol::OK) {
+    goto release;
+  }
+
+  ist.str(buf);
   while (ist >> file_inum >> file_name) {
     if (file_name == name) {
       found = true;
-      inum_to_remove = file_inum;
+      inum_to_remove_string = file_inum;
       continue; // skip this entry
     }
     ost << file_inum << " " << file_name << "\n";
   }
+  inum_to_remove = n2i(inum_to_remove_string);
+  lc -> acquire(inum_to_remove);
   if (!found) {
     printf("File not found with name %s\n", name);
-    return extent_protocol::NOENT; // file not found
+    ret = extent_protocol::NOENT; // file not found
   }
   buf = ost.str();
   ret = ec->put(parent, buf);
   if (ret != extent_protocol::OK) {
     printf("Error putting parent %016llx\n", parent);
-    return ret;
+    goto release;
   }
-  ret = ec->remove(n2i(inum_to_remove)); // remove the file
+  ret = ec->remove(inum_to_remove); // remove the file
   if (ret != extent_protocol::OK) {
     printf("Error removing file %016llx\n", n2i(file_inum));
-    return ret;
+    goto release;
   }
-  return OK;
+
+  release:
+  lc -> release(inum_to_remove);
+  lc -> release(parent);
+  return ret;
 }
