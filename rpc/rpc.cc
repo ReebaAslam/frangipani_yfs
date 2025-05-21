@@ -544,15 +544,10 @@ rpcs::dispatch(djob_t *j)
 				free(b1);
 			}
 			break;
-		case INPROGRESS:{ //server is working on this request
-			// jsl_log(JSL_DBG_2, "rpcs::dispatch: INPROGRESS for xid %u clt_nonce %u\n", h.xid, h.clt_nonce);
-			// reply_header rh_inprog(h.xid, -3);
-			// marshall rep_inprog;
-			// rep_inprog.pack_reply_header(rh_inprog);
+		case INPROGRESS: //server is working on this request
 			break;
-		}
 		case DONE: //duplicate and we still have the response
-			//c->send(b1, sz1);
+			c->send(b1, sz1);
 			break;
 		case FORGOTTEN: //very old request and we don't have the response anymore
 			jsl_log(JSL_DBG_2, "rpcs::dispatch: very old request %u from %u\n", 
@@ -744,15 +739,6 @@ operator<<(marshall &m, unsigned long long x)
 	return m;
 }
 
-marshall &
-operator<<(marshall &m, unsigned long x)
-{
-  if(sizeof(unsigned long) == sizeof(unsigned int))
-    return m << (unsigned int)x;
-  if(sizeof(unsigned long) == sizeof(unsigned long long))
-    return m << (unsigned long long) x;
-}
-
 void
 marshall::pack(int x)
 {
@@ -864,13 +850,22 @@ operator>>(unmarshall &u, unsigned long long &x)
 	return u;
 }
 
+marshall &
+operator<<(marshall &m, unsigned long x)
+{
+	if(sizeof(unsigned long) == sizeof(unsigned int))
+		return m << (unsigned int) x;
+	if(sizeof(unsigned long) == sizeof(unsigned long long))
+		return m << (unsigned long long) x;
+}
+
 unmarshall &
 operator>>(unmarshall &u, unsigned long &x)
 {
-  if(sizeof(unsigned long) == sizeof(unsigned int))
-    return u >> (unsigned int &) x;
-  if(sizeof(unsigned long) == sizeof(unsigned long long))
-    return u >> (unsigned long long &) x;
+	if(sizeof(unsigned long) == sizeof(unsigned int))
+		return u >> (unsigned int &) x;
+	if(sizeof(unsigned long) == sizeof(unsigned long long))
+		return u >> (unsigned long long &) x;
 }
 
 unmarshall &

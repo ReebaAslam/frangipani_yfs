@@ -21,8 +21,6 @@ lock_server::stat(int clt, lock_protocol::lockid_t lid, int &r)
   return ret;
 }
 
-
-
 lock_protocol::status
 lock_server::acquire(int clt, lock_protocol::lockid_t lid, int &r){
 
