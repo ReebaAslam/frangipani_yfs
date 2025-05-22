@@ -562,32 +562,30 @@ rpcs::dispatch(djob_t *j)
 }
 
 
-void rpcs::add_reply(unsigned int clt_nonce, unsigned int xid, char *b, int sz) {
-    ScopedLock rwl(&reply_window_m_);
+void
+rpcs::add_reply(unsigned int clt_nonce, unsigned int xid,
+		char *b, int sz)
+{
+	ScopedLock rwl(&reply_window_m_);
+        // You fill this in for Lab 1.
+	std::map<unsigned int,std::list<reply_t> >::iterator map_it;
+	std::list<reply_t> rep_list;
+	std::list<reply_t>::iterator list_it;
 
-    auto it = reply_window_.find(clt_nonce);
-    if (it == reply_window_.end()) {
-        reply_window_[clt_nonce] = std::list<reply_t>();
-    }
+	rep_list = reply_window_[clt_nonce];
 
-    // Check if a reply with the same xid already exists
-    for (const auto& reply : reply_window_[clt_nonce]) {
-        if (reply.xid == xid) {
-            return;
-        }
-    }
-
-    // Create the new reply_t object
-    reply_t new_reply(xid);
-    new_reply.sz = sz;
-
-    // Allocate memory for the reply buffer and copy the data into it
-    new_reply.buf = new char[sz];
-    std::memcpy(new_reply.buf, b, sz);
-	
-    // Add the new reply to the list for this clt_nonce
-    reply_window_[clt_nonce].push_back(new_reply);
-	printf("Successfully added reply with xid %u for clt_nonce %u.\n", xid, clt_nonce);
+	for (list_it = rep_list.begin();
+	     list_it != rep_list.end();
+	     list_it++) {
+		if (list_it->xid == xid) {
+			assert(list_it->cb_present == false && list_it->buf == NULL);
+			list_it->cb_present = true;
+			list_it->buf = b;
+			list_it->sz = sz;
+			break;
+		}
+	}
+	reply_window_[clt_nonce] = rep_list;
 }
 
 
@@ -616,31 +614,55 @@ rpcs::free_reply_window(void)
 
 rpcs::rpcstate_t 
 rpcs::checkduplicate_and_update(unsigned int clt_nonce, unsigned int xid,
-                                 unsigned int xid_rep, char **b, int *sz)
+		unsigned int xid_rep, char **b, int *sz)
 {
-    ScopedLock rwl(&reply_window_m_);
+	ScopedLock rwl(&reply_window_m_);
+        // You fill this in for Lab 1.
+	rpcstate_t ret = NEW;
+	std::map<unsigned int, std::list<reply_t> >::iterator map_it;
+	std::list<reply_t> rep_list;
+	std::list<reply_t>::iterator list_iter;
 
-    auto it = reply_window_.find(clt_nonce);
-    if (it != reply_window_.end()) {
-        for (auto& reply : it->second) {
-            if (reply.xid == xid) {
-                // Found a reply with the same xid_rep, check its state
-                if (reply.cb_present) {
-                    // Callback is present, so the reply has been processed
-                    printf("Duplicate reply (DONE) detected for xid: %u, clt_nonce: %u\n", xid, clt_nonce);
-                    return DONE;
-                } else {
-                    // Callback is not present, so it's still in progress
-                    printf("Duplicate reply (INPROGRESS) detected for xid: %u, clt_nonce: %u\n", xid, clt_nonce);
-                    return INPROGRESS;
-                }
-            }
-        }
-    }
+	// client is always stored before calling this
+	rep_list = reply_window_[clt_nonce];
 
-    return NEW;
+	for(list_iter = rep_list.begin();
+	    list_iter != rep_list.end();
+	    list_iter++) {
+		if (list_iter->xid <= xid_rep) {
+			free(list_iter->buf);
+			list_iter->buf = NULL;
+			list_iter->sz = 0;
+			list_iter->cb_present = false;
+		}
+	}
+
+	for(list_iter = rep_list.begin();
+	    list_iter != rep_list.end();
+	    list_iter++) {
+		if (list_iter->xid == xid)
+			break;
+	}
+		
+	if (list_iter == rep_list.end()) {
+		reply_t *rep = new reply_t(xid);
+		rep_list.push_back(*rep);
+		reply_window_[clt_nonce] = rep_list;
+		ret = NEW;
+	} else if (list_iter->cb_present == true) {
+		*b = list_iter->buf;
+		*sz = list_iter->sz;
+		ret = DONE;
+	} else if (list_iter->cb_present == false && xid > xid_rep) {
+		ret = INPROGRESS;
+	} else if (list_iter->cb_present == false && xid <= xid_rep) {
+		ret = FORGOTTEN;
+	} else {
+		assert(0);
+	}
+
+	return ret;
 }
-
 //rpc handler
 int 
 rpcs::rpcbind(int a, int &r)
