@@ -75,14 +75,40 @@ class lock_client_cache : public lock_client {
   int rlock_port;
   std::string hostname;
   std::string id;
+  enum lock_state {NONE, FREE, LOCKED, ACQUIRING, RELEASING};
+  struct lock_info {
+    lock_state state;
+    pthread_cond_t *cond;
+    int sequence_number;
+    std::list<pthread_t> waiting_threads;
+    bool to_be_revoked;
+    lock_info(){
+      state = NONE;
+      cond = new pthread_cond_t;
+      pthread_cond_init(cond, NULL);
+      sequence_number = 0;
+      to_be_revoked = false;
+    }
+  };
+  // A map to keep track of the locks and their states
+  std::map<lock_protocol::lockid_t, lock_info> lock_cache;
+  pthread_mutex_t lock_mutex;
+  pthread_cond_t *releaser_cv;
+  std::list<lock_protocol::lockid_t> revoke_queue;
+
 
  public:
   static int last_port;
   lock_client_cache(std::string xdst, class lock_release_user *l = 0);
   virtual ~lock_client_cache() {};
   lock_protocol::status acquire(lock_protocol::lockid_t);
+  void remove_pthread_from_waiting_threads(lock_client_cache::lock_info &li);
+  void add_pthread_to_waiting_threads(lock_client_cache::lock_info &li);
   virtual lock_protocol::status release(lock_protocol::lockid_t);
   void releaser();
+  rlock_protocol::status revoke(lock_protocol::lockid_t lid, int &);
+  rlock_protocol::status retry(lock_protocol::lockid_t lid, int &);
+  std::string get_id() { return id; }
 };
 #endif
 
