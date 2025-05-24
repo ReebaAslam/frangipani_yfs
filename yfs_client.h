@@ -6,11 +6,11 @@
 #include "extent_client.h"
 #include "lock_client.h"
 #include <vector>
-
+#include "lock_client_cache.h"
 
   class yfs_client {
   extent_client *ec;
-  lock_client *lc;
+  lock_client_cache *lc;
  public:
 
   typedef unsigned long long inum;

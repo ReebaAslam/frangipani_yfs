@@ -21,7 +21,8 @@ yfs_client::yfs_client(std::string extent_dst, std::string lock_dst)
   {
     ec->put(0x1, "");
   }
-  lc = new lock_client(lock_dst);
+  lock_release_user *lu = nullptr;
+  lc = new lock_client_cache(lock_dst, lu);
 }
 
 
