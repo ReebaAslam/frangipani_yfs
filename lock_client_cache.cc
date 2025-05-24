@@ -40,6 +40,8 @@ lock_client_cache::lock_client_cache(std::string xdst,
   assert (r == 0);
   releaser_cv = new pthread_cond_t;
   pthread_cond_init(releaser_cv, NULL);
+  pthread_mutex_init(&lock_mutex, NULL);
+
 }
 
 lock_protocol::status
@@ -56,44 +58,55 @@ lock_client_cache::acquire(lock_protocol::lockid_t lid)
   }
 
   while (true) {
-    // Only the first thread in the list is allowed to interact with the server or lock
-    if (li.waiting_threads.front() != tid) {
+    if (li.to_be_revoked){
+      printf("[client] %s lock %016llx is to be revoked, not acquiring lock and thread %lu going to sleep\n", this->get_id().c_str(), lid, tid);
       pthread_cond_wait(li.cond, &lock_mutex);
       continue;
     }
-    
-
-    if (li.state == NONE) {
-      li.state = ACQUIRING;
-      pthread_mutex_unlock(&lock_mutex);
-      int r;
-      int ret = cl->call(lock_protocol::acquire, this->id, li.sequence_number++, lid, r);
-      pthread_mutex_lock(&lock_mutex);
-      if (ret == lock_protocol::OK) {
+    if (li.waiting_threads.front() != tid){
+      printf("[client] %s lock %016llx thread not the first one, not acquiring lock and thread %lu going to sleep\n", this->get_id().c_str(), lid, tid);
+      pthread_cond_wait(li.cond, &lock_mutex);
+      continue;
+    }
+    else {
+      if (li.state != NONE && li.state != FREE) {
+        printf("[client] %s lock %016llx state is %s which is neither FREE nor NONE, not acquiring lock and thread %lu going to sleep\n", this->get_id().c_str(), lid, this->get_state(li.state).c_str(), tid);
+        pthread_cond_wait(li.cond, &lock_mutex);
+        continue;
+      }
+      if (li.state == NONE) {
+        printf("[client] %s lock %016llx state is none, thread %lu ,acquiring lock from server\n", this->get_id().c_str(), lid, tid);
+        li.state = ACQUIRING;
+        li.retry_received = false;
+        pthread_mutex_unlock(&lock_mutex);
+        int r;
+        int ret = cl->call(lock_protocol::acquire, this->id, li.sequence_number++, lid, r);
+        pthread_mutex_lock(&lock_mutex);
+        if (ret == lock_protocol::OK) {
+          printf("[client] %s lock %016llx acquired by thread %lu\n", this->get_id().c_str(), lid, tid);
+          li.state = LOCKED;
+          li.waiting_threads.pop_front();
+          pthread_mutex_unlock(&lock_mutex);
+          return lock_protocol::OK;
+        }
+        else if (ret == lock_protocol::RETRY){
+          li.state = NONE;
+          printf("[client] %s lock %016llx retry received by thread %lu\n", this->get_id().c_str(), lid, tid);
+          while (!li.retry_received){
+            pthread_cond_wait(li.cond, &lock_mutex);
+            continue;
+          }
+          printf("[client] retry received for lock %016llx by thread %lu\n", lid, tid);
+        }
+      }
+      else if (li.state == FREE){
+        printf("[client] %s lock %016llx state is free, thread %lu is acquiring lock\n", this->get_id().c_str(), lid, tid);
         li.state = LOCKED;
         li.waiting_threads.pop_front();
         pthread_mutex_unlock(&lock_mutex);
         return lock_protocol::OK;
-      } else if (ret == lock_protocol::RETRY) {
-        // Wait for retry notification
-        pthread_cond_wait(li.cond, &lock_mutex);
-        continue;
-      } else {
-        pthread_mutex_unlock(&lock_mutex);
-        return lock_protocol::RPCERR;
       }
     }
-
-    if (li.state == FREE && !li.to_be_revoked) {
-      li.state = LOCKED;
-      li.waiting_threads.pop_front();
-      pthread_mutex_unlock(&lock_mutex);
-      printf("[client] %s acquired lock %016llx\n", this-> get_id().c_str(), lid);
-      return lock_protocol::OK;
-    }
-
-    // Otherwise, wait until state changes
-    pthread_cond_wait(li.cond, &lock_mutex);
   }
 }
 
@@ -155,8 +168,9 @@ void lock_client_cache::releaser()
       lock_protocol::lockid_t lid = *it;
       lock_info &li = lock_cache[lid];
 
-      printf("[client] %s checking lock %016llx\n to release to server\n", this->id.c_str(), lid);
-      if (li.state == FREE) {
+      printf("[client] %s checking lock %016llx to release to server\n", this->id.c_str(), lid);
+      printf("[client] %s lock %016llx state: %s, to_be_revoked: %d\n", this->id.c_str(), lid, this->get_state(li.state).c_str(), li.to_be_revoked);
+      if (li.state != LOCKED) {
         // Can safely release this lock
         printf("[client] %s releasing lock %016llx to server\n", this->id.c_str(), lid);
         li.state = RELEASING;
@@ -172,6 +186,7 @@ void lock_client_cache::releaser()
           li.to_be_revoked = false;
           li.state = NONE;
           it = revoke_queue.erase(it);  // remove from queue
+          pthread_cond_broadcast(li.cond); // wake up any waiting threads
           continue;
         } else {
           std::cerr << "Error releasing lock " << lid << std::endl;
@@ -193,13 +208,7 @@ lock_client_cache::revoke(lock_protocol::lockid_t lid, int &r)
 {
   printf("[client] %s revoke lock %016llx\n", this->id.c_str(), lid);
   pthread_mutex_lock(&lock_mutex);
-  lock_info li;
-  if (lock_cache.find(lid) == lock_cache.end()) {
-    printf("[client] %s lock %016llx not found\n", this->id.c_str(), lid);
-    pthread_mutex_unlock(&lock_mutex);
-    return rlock_protocol::RPCERR;
-  }
-  li = lock_cache[lid];
+  lock_info &li = lock_cache[lid];
   li.to_be_revoked = true;
   if (std::find(revoke_queue.begin(), revoke_queue.end(), lid) == revoke_queue.end()) {
     revoke_queue.push_back(lid);
@@ -220,14 +229,34 @@ lock_client_cache::retry(lock_protocol::lockid_t lid, int &r)
 {
   printf("[client] %s retry lock %016llx\n", this->id.c_str(), lid);
   pthread_mutex_lock(&lock_mutex);
-  lock_info li;
   if (lock_cache.find(lid) == lock_cache.end()) {
     printf("[client] %s lock %016llx not found\n", this->id.c_str(), lid);
     pthread_mutex_unlock(&lock_mutex);
     return rlock_protocol::RPCERR;
   }
-  li = lock_cache[lid];
+
+  lock_info &li = lock_cache[lid];
+  li.retry_received = true;
   pthread_cond_broadcast(li.cond);
   pthread_mutex_unlock(&lock_mutex);
+  r = rlock_protocol::OK;
   return rlock_protocol::OK;
 }
+
+
+std::string lock_client_cache::get_state(int state) {
+  switch (state) {
+    case NONE:
+      return "NONE";
+    case FREE:
+      return "FREE";
+    case LOCKED:
+      return "LOCKED";
+    case ACQUIRING:
+      return "ACQUIRING";
+    case RELEASING:
+      return "RELEASING";
+    default:
+      return "UNKNOWN";
+  }
+} 

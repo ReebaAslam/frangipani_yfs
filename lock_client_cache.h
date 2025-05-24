@@ -82,12 +82,14 @@ class lock_client_cache : public lock_client {
     int sequence_number;
     std::list<pthread_t> waiting_threads;
     bool to_be_revoked;
+    bool retry_received;
     lock_info(){
       state = NONE;
       cond = new pthread_cond_t;
       pthread_cond_init(cond, NULL);
       sequence_number = 0;
       to_be_revoked = false;
+      retry_received = false;
     }
   };
   // A map to keep track of the locks and their states
@@ -109,6 +111,7 @@ class lock_client_cache : public lock_client {
   rlock_protocol::status revoke(lock_protocol::lockid_t lid, int &);
   rlock_protocol::status retry(lock_protocol::lockid_t lid, int &);
   std::string get_id() { return id; }
+  std::string get_state(int state);
 };
 #endif
 

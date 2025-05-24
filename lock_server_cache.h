@@ -17,12 +17,14 @@ class lock_server_cache {
     pthread_cond_t *cv;
     lock_state state;
     std::list <std::string> waiting_clients;
+    std::string retryer_sent_to;
     lock_info() {
       clt_id = "";
       seq_num = 0;
       cv = new pthread_cond_t;
       pthread_cond_init(cv, NULL);
       state = FREE;
+      retryer_sent_to = "";
     }
     
   };
