@@ -97,7 +97,7 @@ lock_server_cache::retryer()
       lock_protocol::lockid_t lid = *it;
       lock_info &li = locks[lid];
 
-      printf("retryer thread checking lock %016llx, state: %s, retryer_sent_to: %s\n", lid, li.state == ACQUIRED ? "ACQUIRED" : "FREE", li.retryer_sent_to.c_str());
+      // printf("retryer thread checking lock %016llx, state: %s, retryer_sent_to: %s\n", lid, li.state == ACQUIRED ? "ACQUIRED" : "FREE", li.retryer_sent_to.c_str());
       if (!li.waiting_clients.empty() && li.retryer_sent_to.empty()) {
         std::string clt = li.waiting_clients.front();
         li.waiting_clients.pop_front();
@@ -154,58 +154,36 @@ lock_server_cache::acquire(std::string clt_id, int seq_num, lock_protocol::locki
   // return lock_protocol::RETRY;
   // do not block the client
   
-
-  if (li.retryer_sent_to != "" && li.retryer_sent_to != clt_id) {
-    printf("retry for lock %016llx is already sent to client %s, current client is %s\n", lid, li.retryer_sent_to.c_str(), clt_id.c_str());
-    // add client to the waiting list if not already there
-    if (std::find(li.waiting_clients.begin(), li.waiting_clients.end(), clt_id) == li.waiting_clients.end()) {
-      printf("adding client %s to waiting list for lock %016llx\n", clt_id.c_str(), lid);
-      li.waiting_clients.push_back(clt_id); // add to waitlist
-    }
-    // send revoke signal to the current retryer if not already sent
-    if (std::find(revokes.begin(), revokes.end(), std::make_pair(lid, li.clt_id)) == revokes.end()) {
-      revokes.push_back(std::make_pair(lid, li.clt_id));
-      printf("lock %llu state is %s \n", lid, li.state == ACQUIRED ? "ACQUIRED" : "FREE");
-      printf("client %s request for acquiring lock %016llx is sending revoke signal to client %s\n", clt_id.c_str(), lid, li.clt_id.c_str());
-      pthread_cond_signal(revoke_cv);
-    }
+  if (li.state == FREE && ((li.retryer_sent_to.empty() && li.waiting_clients.empty()) || li.retryer_sent_to == clt_id)) {
+    // if the lock is free and retryer asking for it or no retryer is set, grant it to the client
+    li.clt_id = clt_id;
+    li.state = ACQUIRED;
+    li.seq_num = seq_num;
+    li.retryer_sent_to.clear(); // reset the retryer sent to client id
+    printf("client %s is granted lock %016llx\n", clt_id.c_str(), lid);
     pthread_mutex_unlock(&lock_mutex);
-    r = lock_protocol::RETRY;
-    return lock_protocol::RETRY;
+    r = lock_protocol::OK;
+    return lock_protocol::OK;
   }
 
+  if (std::find(li.waiting_clients.begin(), li.waiting_clients.end(), clt_id) == li.waiting_clients.end()) {
+    printf("adding client %s to waiting list for lock %016llx\n", clt_id.c_str(), lid);
+    li.waiting_clients.push_back(clt_id); // add to waitlist
+  }
   if (li.state == ACQUIRED){
     if (li.retryer_sent_to == clt_id) {
       printf("client %s is the retryer for lock %016llx but lock was already acquired, this seems buggy\n", clt_id.c_str(), lid);
     }
-    if (std::find(li.waiting_clients.begin(), li.waiting_clients.end(), clt_id) == li.waiting_clients.end()) {
-      printf("adding client %s to waiting list for lock %016llx\n", clt_id.c_str(), lid);
-      li.waiting_clients.push_back(clt_id); // add to waitlist
-    }
-
     if (std::find(revokes.begin(), revokes.end(), std::make_pair(lid, li.clt_id)) == revokes.end()) {
       revokes.push_back(std::make_pair(lid, li.clt_id));
       printf("lock %llu state is %s \n", lid, li.state == ACQUIRED ? "ACQUIRED" : "FREE");
       printf("client %s request for acquiring lock %016llx is sending revoke signal to client %s\n", clt_id.c_str(), lid, li.clt_id.c_str());
       pthread_cond_signal(revoke_cv);
     }
-    pthread_mutex_unlock(&lock_mutex);
-    r = lock_protocol::RETRY;
-    return lock_protocol::RETRY;
   }
-
-  // printf("lock %llu is free, granting it to client %d\n", lid, clt);
-  li.clt_id = clt_id;
-  li.state = ACQUIRED;
-  li.retryer_sent_to.clear(); // reset the retryer sent to client id
-  if ((std::find(li.waiting_clients.begin(), li.waiting_clients.end(), clt_id) != li.waiting_clients.end())) {
-    li.waiting_clients.remove(clt_id); // remove from waiting list if it exists
-  }
-  printf("client %s is granted lock %016llx\n", clt_id.c_str(), lid);
-
   pthread_mutex_unlock(&lock_mutex);
-  r = lock_protocol::OK;
-  return lock_protocol::OK;
+  r = lock_protocol::RETRY;
+  return lock_protocol::RETRY;
 }
 
 lock_protocol::status
