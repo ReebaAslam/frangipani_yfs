@@ -54,16 +54,21 @@ lock_server_cache::revoker()
       // Unlock before doing RPC
       pthread_mutex_unlock(&lock_mutex);
 
-      sockaddr_in dstsock;
-      make_sockaddr(clt.c_str(), &dstsock);
-      rpcc cl(dstsock);
-      if (cl.bind() < 0) {
-        printf("[server] bind failed to client %s\n", clt.c_str());
+      rpcc* cl;
+      if (client_connections.count(clt) == 0) {
+          sockaddr_in dstsock;
+          make_sockaddr(clt.c_str(), &dstsock);
+          cl = new rpcc(dstsock);
+          cl->bind();  // Optional, some implementations auto-bind on call()
+          client_connections[clt] = cl;
+      } else {
+          cl = client_connections[clt];
       }
+
       // Send revoke signal to the client
       int r;
       printf("server is sending revoke signal to client %s for lock %016llx\n", clt.c_str(), lid);
-      int ret = cl.call(rlock_protocol::revoke, lid, r);
+      int ret = cl->call(rlock_protocol::revoke, lid, r);
 
       // Re-lock to update shared state
       pthread_mutex_lock(&lock_mutex);
@@ -101,21 +106,25 @@ lock_server_cache::retryer()
       if (!li.waiting_clients.empty() && li.retryer_sent_to.empty()) {
         std::string clt = li.waiting_clients.front();
         li.waiting_clients.pop_front();
-
-        sockaddr_in dstsock;
-        make_sockaddr(clt.c_str(), &dstsock);
+        li.retryer_sent_to = clt; // update the client id for the retryer
+        
         pthread_mutex_unlock(&lock_mutex);
-
-        rpcc cl(dstsock);
-        if (cl.bind() < 0) {
-        printf("[server] bind failed to client %s\n", clt.c_str());
+        rpcc* cl;
+        if (client_connections.count(clt) == 0) {
+            sockaddr_in dstsock;
+            make_sockaddr(clt.c_str(), &dstsock);
+            cl = new rpcc(dstsock);
+            cl->bind();  // Optional, some implementations auto-bind on call()
+            client_connections[clt] = cl;
+        } else {
+            cl = client_connections[clt];
         }
+
         int r;
         printf("server is sending retry signal to client %s for lock %016llx\n", clt.c_str(), lid);
-        int ret = cl.call(rlock_protocol::retry, lid, r);
+        int ret = cl -> call(rlock_protocol::retry, lid, r);
 
         pthread_mutex_lock(&lock_mutex);
-        li.retryer_sent_to = clt; // update the client id for the retryer
         if (!li.waiting_clients.empty()) {
           // if there are still waiting clients, add back to revokes
           if (std::find(revokes.begin(), revokes.end(), std::make_pair(lid, clt)) == revokes.end()) {

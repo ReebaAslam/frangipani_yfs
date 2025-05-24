@@ -34,6 +34,7 @@ class lock_server_cache {
   std::list< std::pair <lock_protocol::lockid_t, std::string>> revokes;
   std::list< lock_protocol::lockid_t > free_locks;
   pthread_cond_t *retry_cv;
+  std::map<std::string, rpcc*> client_connections;
 
  public:
   lock_server_cache();
