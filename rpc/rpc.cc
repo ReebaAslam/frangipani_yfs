@@ -872,24 +872,6 @@ operator>>(unmarshall &u, unsigned long long &x)
 	return u;
 }
 
-marshall &
-operator<<(marshall &m, unsigned long x)
-{
-	if(sizeof(unsigned long) == sizeof(unsigned int))
-		return m << (unsigned int) x;
-	if(sizeof(unsigned long) == sizeof(unsigned long long))
-		return m << (unsigned long long) x;
-}
-
-unmarshall &
-operator>>(unmarshall &u, unsigned long &x)
-{
-	if(sizeof(unsigned long) == sizeof(unsigned int))
-		return u >> (unsigned int &) x;
-	if(sizeof(unsigned long) == sizeof(unsigned long long))
-		return u >> (unsigned long long &) x;
-}
-
 unmarshall &
 operator>>(unmarshall &u, std::string &s)
 {
@@ -911,6 +893,24 @@ unmarshall::rawbytes(std::string &ss, unsigned int n)
 		assert(ss.size() == n);
 		_ind += n;
 	}
+}
+
+marshall &
+operator<<(marshall &m, unsigned long x)
+{
+	if(sizeof(unsigned long) == sizeof(unsigned int))
+		return m << (unsigned int) x;
+	if(sizeof(unsigned long) == sizeof(unsigned long long))
+		return m << (unsigned long long) x;
+}
+
+unmarshall &
+operator>>(unmarshall &u, unsigned long &x)
+{
+	if(sizeof(unsigned long) == sizeof(unsigned int))
+		return u >> (unsigned int &) x;
+	if(sizeof(unsigned long) == sizeof(unsigned long long))
+		return u >> (unsigned long long &) x;
 }
 
 bool operator<(const sockaddr_in &a, const sockaddr_in &b) {
