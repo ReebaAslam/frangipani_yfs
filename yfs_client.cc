@@ -109,7 +109,7 @@ yfs_client::getdir(inum inum, dirinfo &din)
   lc -> acquire(inum);
   int r = OK;
 
-  printf("getdir %016llx\n", inum);
+  printf("[yfs_client]getdir %016llx\n", inum);
   extent_protocol::attr a;
   if (ec->getattr(inum, a) != extent_protocol::OK) {
     r = IOERR;
@@ -170,6 +170,7 @@ yfs_client::add_entry_to_filesystem(inum parent, inum &entry_inum, const char *n
   std::string buf;
   int ret = ec->get(parent, buf);
   if (ret != extent_protocol::OK) {
+    printf("[yfs_client] Error getting parent %016llx\n", parent);
     lc->release(parent);
     return ret;
   }

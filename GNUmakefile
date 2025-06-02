@@ -82,7 +82,7 @@ lock_server+= $(rsm_files)
 endif
 lock_server : $(patsubst %.cc,%.o,$(lock_server)) rpc/librpc.a
 
-yfs_client=yfs_client.cc extent_client.cc fuse.cc
+yfs_client=yfs_client.cc extent_client.cc extent_server.cc fuse.cc
 ifeq ($(LAB4GE),1)
 yfs_client += lock_client.cc
 endif

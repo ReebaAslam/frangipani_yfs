@@ -40,9 +40,10 @@ int extent_server::get(extent_protocol::extentid_t id, std::string &buf)
 
 int extent_server::getattr(extent_protocol::extentid_t id, extent_protocol::attr &a)
 {
-  printf("getattr for extent id %016llx\n", id);
+  printf("[extent_server] getattr for extent id %016llx\n", id);
 
   if (extent_attrs.find(id) != extent_attrs.end()) {
+    printf("[extent_server] getattr found extent id %016llx \n", id);
     a = extent_attrs[id];
     return extent_protocol::OK;
   }
@@ -52,7 +53,7 @@ int extent_server::getattr(extent_protocol::extentid_t id, extent_protocol::attr
 int extent_server::remove(extent_protocol::extentid_t id, int &r)
 {
   r = extent_protocol::NOENT;
-  printf("remove for extent id %016llx\n", id);
+  printf("[extent_server]remove for extent id %016llx\n", id);
   if (extents.find(id) != extents.end()) {
     extents.erase(id);
     extent_attrs.erase(id);

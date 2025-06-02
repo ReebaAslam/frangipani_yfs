@@ -25,6 +25,7 @@ main(int argc, char *argv[])
 
   char *count_env = getenv("RPC_COUNT");
   if(count_env != NULL){
+    printf("RPC_COUNT is set to %s\n", count_env);
     count = atoi(count_env);
   }
 
