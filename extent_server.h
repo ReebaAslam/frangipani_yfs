@@ -14,10 +14,11 @@ class extent_server {
  public:
   extent_server();
 
-  int put(extent_protocol::extentid_t id, std::string, int &);
+  int put(extent_protocol::extentid_t id, std::string, extent_protocol::attr, int &);
   int get(extent_protocol::extentid_t id, std::string &);
   int getattr(extent_protocol::extentid_t id, extent_protocol::attr &);
   int remove(extent_protocol::extentid_t id, int &);
+  int setattr(extent_protocol::extentid_t id, extent_protocol::attr &a, int &r);
 };
 
 #endif 

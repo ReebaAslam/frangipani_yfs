@@ -8,7 +8,18 @@
 #include <vector>
 #include "lock_client_cache.h"
 
-  class yfs_client {
+
+class extent_release_user : public lock_release_user {
+ extent_client *ec;
+ public:
+ extent_release_user(extent_client *e) : ec(e) {}
+ void dorelease(lock_protocol::lockid_t lid) override {
+  printf("[extent_release_user] dorelease called for lock %016llx\n", lid);
+  ec ->flush(lid);
+  }
+};
+
+class yfs_client {
   extent_client *ec;
   lock_client_cache *lc;
  public:

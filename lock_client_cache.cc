@@ -176,6 +176,7 @@ void lock_client_cache::releaser()
         li.state = RELEASING;
         pthread_mutex_unlock(&lock_mutex);
 
+        lu -> dorelease(lid); // Notify the user that the lock is being released
         int r;
         int ret = cl->call(lock_protocol::release, this->id, li.sequence_number++, lid, r);
 

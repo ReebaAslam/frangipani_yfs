@@ -11,25 +11,18 @@
 extent_server::extent_server() {}
 
 
-int extent_server::put(extent_protocol::extentid_t id, std::string buf, int &r)
+int extent_server::put(extent_protocol::extentid_t id, std::string buf, extent_protocol::attr attr, int &r)
 {
   printf("Calling put for extent id %016llx\n", id);
-
-  extent_protocol::attr a;
-  a.size = buf.size();
-  a.mtime = time(0);
-  a.ctime = time(0);
-  a.atime = time(0);
   extents[id] = buf;
-  extent_attrs[id] = a;
+  extent_attrs[id] = attr;
   r = extent_protocol::OK;
   return extent_protocol::OK;
 }
 
 int extent_server::get(extent_protocol::extentid_t id, std::string &buf)
 {
-  printf("get for extent id %016llx\n", id);
-  printf("get for extent id %016llx\n bool condition %s\n", id, extents.find(id) != extents.end() ? "true" : "false");
+  printf("get for extent id %016llx bool condition %s\n", id, extents.find(id) != extents.end() ? "true" : "false");
   if (extents.find(id) != extents.end() && extent_attrs.find(id) != extent_attrs.end()) {
     buf = extents[id];
     extent_attrs[id].atime = time(0);
@@ -63,3 +56,14 @@ int extent_server::remove(extent_protocol::extentid_t id, int &r)
   return extent_protocol::NOENT;
 }
 
+
+int extent_server::setattr(extent_protocol::extentid_t id, extent_protocol::attr &a, int &r)
+{
+  printf("[extent_server] setattr for extent id %016llx\n", id);
+  if (extent_attrs.find(id) != extent_attrs.end()) {
+    extent_attrs[id] = a;
+    r = extent_protocol::OK;
+    return extent_protocol::OK;
+  }
+  return extent_protocol::NOENT;
+}

@@ -16,13 +16,16 @@
 yfs_client::yfs_client(std::string extent_dst, std::string lock_dst)
 {
   ec = new extent_client(extent_dst);
+  lock_release_user *lu = new extent_release_user(ec);
+  lc = new lock_client_cache(lock_dst, lu);
   std::string dir_content;
+  lc->acquire(0x1); // Acquire lock for root directory
   if (ec->get(0x1, dir_content) == extent_protocol::NOENT) 
   {
+    printf("[yfs_client] Root directory does not exist, creating it.\n");
     ec->put(0x1, "");
   }
-  lock_release_user *lu = nullptr;
-  lc = new lock_client_cache(lock_dst, lu);
+  lc->release(0x1); // Release lock for root directory
 }
 
 
