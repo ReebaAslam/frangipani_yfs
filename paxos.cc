@@ -181,7 +181,7 @@ proposer::prepare(unsigned instance, std::vector<std::string> &accepts,
         break;
     }
     if(r.accept == 1) {
-      printf("proposer::prepare: call to %s rejected\n", nodes[i].c_str());
+      printf("proposer::prepare: call to %s accepted\n", nodes[i].c_str());
       accepts.push_back(nodes[i]);
       if (r.n_a.n > highest_n & r.v_a.size() > 0) {
         highest_n = r.n_a.n;
@@ -290,7 +290,6 @@ acceptor::preparereq(std::string src, paxos_protocol::preparearg a,
          instance_h, n_h.n, n_h.m.c_str(), n_a.n, n_a.m.c_str(), v_a.c_str());
   printf("acceptor::preparereq: received instance=%d n=%d.%s v=%s\n",
          a.instance, a.n.n, a.n.m.c_str(), a.v.c_str());
-  pthread_mutex_lock(&pxs_mutex);
   r.oldinstance = 0; // not an old instance
   r.accept = 0; // not accepted
   r.n_a = n_a;
@@ -314,8 +313,6 @@ acceptor::preparereq(std::string src, paxos_protocol::preparearg a,
     printf("acceptor::preparereq: instance %d rejected n=%d.%s v=%s\n",
            a.instance, a.n.n, a.n.m.c_str(), a.v.c_str());
   }
-
-  pthread_mutex_unlock(&pxs_mutex);
   return paxos_protocol::OK;
 
 }
@@ -323,7 +320,6 @@ acceptor::preparereq(std::string src, paxos_protocol::preparearg a,
 paxos_protocol::status
 acceptor::acceptreq(std::string src, paxos_protocol::acceptarg a, int &r)
 {
-  pthread_mutex_lock(&pxs_mutex);
   r = 0;
   if(a.instance <= instance_h) {
     // already accepted
@@ -342,17 +338,13 @@ acceptor::acceptreq(std::string src, paxos_protocol::acceptarg a, int &r)
     // we reject this proposal
     printf("acceptor::acceptreq: instance %d rejected n=%d.%s v=%s\n",
            a.instance, a.n.n, a.n.m.c_str(), a.v.c_str());
-    r = 0; // not accepted
   }
-  pthread_mutex_unlock(&pxs_mutex);
-
   return paxos_protocol::OK;
 }
 
 paxos_protocol::status
 acceptor::decidereq(std::string src, paxos_protocol::decidearg a, int &r)
 {
-  pthread_mutex_lock(&pxs_mutex);
   // handle an decide message from proposer
   if( a.instance <= instance_h) {
     // already decided
@@ -361,13 +353,9 @@ acceptor::decidereq(std::string src, paxos_protocol::decidearg a, int &r)
     r = 0; // not accepted
   }
   else{
-    values[a.instance] = a.v;
-    instance_h = a.instance;
-    l->loginstance(instance_h, a.v);
-    r = 1; // accepted
+    commit_wo(a.instance, a.v);
+    r = 1;
   }
-
-  pthread_mutex_unlock(&pxs_mutex);
   return paxos_protocol::OK;
 }
 
