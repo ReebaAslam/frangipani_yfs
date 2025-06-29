@@ -180,7 +180,7 @@ proposer::prepare(unsigned instance, std::vector<std::string> &accepts,
         acc->commit(instance, r.v_a);
         break;
     }
-    if(r.accept == 1) {
+    else if(r.accept == 1) {
       printf("proposer::prepare: call to %s accepted\n", nodes[i].c_str());
       accepts.push_back(nodes[i]);
       if (r.n_a.n > highest_n & r.v_a.size() > 0) {
@@ -188,8 +188,12 @@ proposer::prepare(unsigned instance, std::vector<std::string> &accepts,
         v = r.v_a;
       }
     }
-    printf("proposer::prepare: got response from %s: oldinstance=%d accept=%d n_a=%d.%s v_a=%s\n",
+    else{
+      printf("proposer::prepare: got response from %s: oldinstance=%d accept=%d n_a=%d.%s v_a=%s\n",
            nodes[i].c_str(), r.oldinstance, r.accept, r.n_a.n, r.n_a.m.c_str(), r.v_a.c_str());
+      result = false;
+      break;
+    }
   }
   return result;
 }
