@@ -40,8 +40,8 @@ lock_server_cache::lock_server_cache()
 void
 lock_server_cache::revoker()
 {
+  pthread_mutex_lock(&lock_mutex);
   while (true) {
-    pthread_mutex_lock(&lock_mutex);
     while (revokes.empty()) {
       pthread_cond_wait(revoke_cv, &lock_mutex);
     }
@@ -50,10 +50,6 @@ lock_server_cache::revoker()
     while (it != revokes.end()) {
       lock_protocol::lockid_t lid = it->first;
       std::string clt = it->second;
-
-      // Unlock before doing RPC
-      pthread_mutex_unlock(&lock_mutex);
-
       rpcc* cl;
       if (client_connections.count(clt) == 0) {
           sockaddr_in dstsock;
@@ -64,7 +60,8 @@ lock_server_cache::revoker()
       } else {
           cl = client_connections[clt];
       }
-
+      // Unlock before doing RPC
+      pthread_mutex_unlock(&lock_mutex);
       // Send revoke signal to the client
       int r;
       printf("server is sending revoke signal to client %s for lock %016llx\n", clt.c_str(), lid);
@@ -78,8 +75,6 @@ lock_server_cache::revoker()
         ++it;  // Keep it for retry
       }
     }
-
-    pthread_mutex_unlock(&lock_mutex);
   }
 }
 
@@ -87,8 +82,8 @@ lock_server_cache::revoker()
 void
 lock_server_cache::retryer()
 {
+  pthread_mutex_lock(&lock_mutex);
   while (true) {
-    pthread_mutex_lock(&lock_mutex);
     // printf("retryer thread started\n");
     // iterate over the locks and for the ones that are free check if there are any waiting clients
     // signal the first one in the list to send an acquire RPC
@@ -103,12 +98,8 @@ lock_server_cache::retryer()
       lock_info &li = locks[lid];
 
       // printf("retryer thread checking lock %016llx, state: %s, retryer_sent_to: %s\n", lid, li.state == ACQUIRED ? "ACQUIRED" : "FREE", li.retryer_sent_to.c_str());
-      if (!li.waiting_clients.empty() && li.retryer_sent_to.empty()) {
-        std::string clt = li.waiting_clients.front();
-        li.waiting_clients.pop_front();
-        li.retryer_sent_to = clt; // update the client id for the retryer
-        
-        pthread_mutex_unlock(&lock_mutex);
+      if (!li.waiting_clients.empty()) {
+        std::string clt = li.waiting_clients.front();        
         rpcc* cl;
         if (client_connections.count(clt) == 0) {
             sockaddr_in dstsock;
@@ -119,31 +110,20 @@ lock_server_cache::retryer()
         } else {
             cl = client_connections[clt];
         }
-
+        pthread_mutex_unlock(&lock_mutex);
         int r;
         printf("server is sending retry signal to client %s for lock %016llx\n", clt.c_str(), lid);
         int ret = cl -> call(rlock_protocol::retry, lid, r);
-
         pthread_mutex_lock(&lock_mutex);
-        if (!li.waiting_clients.empty()) {
-          // if there are still waiting clients, add back to revokes
-          if (std::find(revokes.begin(), revokes.end(), std::make_pair(lid, clt)) == revokes.end()) {
-            revokes.push_back(std::make_pair(lid, clt));
-            printf("client %s request for retrying lock %016llx is sending revoke signal to the same client because of waiting list\n", clt.c_str(), lid);
-            pthread_cond_signal(revoke_cv);
-          }
-        }
-
-        if (ret == rlock_protocol::OK) {
-          it = free_locks.erase(it);  
+        if (ret == lock_protocol::OK) {
+          printf("server sent retry signal to client %s for lock %016llx\n", clt.c_str(), lid);
+          free_locks.remove(lid); // remove from free locks list if no more waiting clients
         } else {
-          ++it;
+          printf("server failed to send retry signal to client %s for lock %016llx, keeping it in free locks list\n", clt.c_str(), lid);
         }
-      } else {
         ++it;
       }
     }
-    pthread_mutex_unlock(&lock_mutex);
   }
 }
 
@@ -156,38 +136,27 @@ lock_server_cache::acquire(std::string clt_id, int seq_num, lock_protocol::locki
 
   // if the lock is not in the map, create a new lock_info object and grant it to the client
   lock_info &li = locks[lid];
-
-  // if lock is already held by another client:
-  // and add the current client to the waiting list
-  // add lock and current client id to revokes
-  // return lock_protocol::RETRY;
-  // do not block the client
-  
-  if (li.state == FREE && ((li.retryer_sent_to.empty() && li.waiting_clients.empty()) || li.retryer_sent_to == clt_id)) {
-    // if the lock is free and retryer asking for it or no retryer is set, grant it to the client
-    li.clt_id = clt_id;
+  if (li.state == FREE){
+    printf("lock %016llx is free, granting to client %s\n", lid, clt_id.c_str());
     li.state = ACQUIRED;
+    li.clt_id = clt_id;
     li.seq_num = seq_num;
-    li.retryer_sent_to.clear(); // reset the retryer sent to client id
-    printf("client %s is granted lock %016llx\n", clt_id.c_str(), lid);
     pthread_mutex_unlock(&lock_mutex);
-    r = lock_protocol::OK;
-    return lock_protocol::OK;
-  }
+    return lock_protocol::OK; // Already owned by the same client
 
-  if (std::find(li.waiting_clients.begin(), li.waiting_clients.end(), clt_id) == li.waiting_clients.end()) {
-    printf("adding client %s to waiting list for lock %016llx\n", clt_id.c_str(), lid);
-    li.waiting_clients.push_back(clt_id); // add to waitlist
   }
-  if (li.state == ACQUIRED){
-    if (li.retryer_sent_to == clt_id) {
-      printf("client %s is the retryer for lock %016llx but lock was already acquired, this seems buggy\n", clt_id.c_str(), lid);
+  else{
+    if (li.clt_id == clt_id) {
+      printf("client %s is trying to acquire lock %016llx but it already owns it\n", clt_id.c_str(), lid);
+      pthread_mutex_unlock(&lock_mutex);
+      return lock_protocol::OK; // Already owned by the same client
     }
-    if (std::find(revokes.begin(), revokes.end(), std::make_pair(lid, li.clt_id)) == revokes.end()) {
-      revokes.push_back(std::make_pair(lid, li.clt_id));
-      printf("lock %llu state is %s \n", lid, li.state == ACQUIRED ? "ACQUIRED" : "FREE");
-      printf("client %s request for acquiring lock %016llx is sending revoke signal to client %s\n", clt_id.c_str(), lid, li.clt_id.c_str());
-      pthread_cond_signal(revoke_cv);
+    else{
+      printf("lock %016llx is already acquired by client %s, adding client %s to waiting list\n", lid, li.clt_id.c_str(), clt_id.c_str());
+      li.waiting_clients.push_back(clt_id);
+      li.seq_num = seq_num; // update the sequence number for the waiting client
+      revokes.push_back(std::make_pair(lid, clt_id)); // add to revokes queue
+      pthread_cond_signal(revoke_cv); // signal the revoker thread
     }
   }
   pthread_mutex_unlock(&lock_mutex);
@@ -201,18 +170,34 @@ lock_server_cache::release(std::string clt_id, int seq_num, lock_protocol::locki
   printf("client %s is requesting to release lock %016llx\n", clt_id.c_str(), lid);
   pthread_mutex_lock(&lock_mutex);
   lock_info &li = locks[lid];
-
-  if (li.clt_id != clt_id && li.retryer_sent_to != clt_id) {
-    printf("client %s is trying to release lock %016llx but it is not the owner\n", clt_id.c_str(), lid);
+  if (li.state == FREE) {
+    printf("lock %016llx is already free, nothing to release\n", lid);
     pthread_mutex_unlock(&lock_mutex);
-    return lock_protocol::RPCERR;
+    return lock_protocol::RPCERR; // Lock is already free
+  }
+
+  if (li.state != ACQUIRED) {
+    printf("lock %016llx is not acquired, cannot release\n", lid);
+    pthread_mutex_unlock(&lock_mutex);
+    return lock_protocol::RPCERR; // Lock is not acquired
+  }
+
+  if (li.clt_id != clt_id) {
+    printf("client %s is trying to release lock %016llx but it is owned by client %s\n", clt_id.c_str(), lid, li.clt_id.c_str());
+    pthread_mutex_unlock(&lock_mutex);
+    return lock_protocol::RPCERR; // Not the owner
+  }
+
+  if (li.seq_num != seq_num) {
+    printf("client %s is trying to release lock %016llx with wrong sequence number %d, expected %d\n", clt_id.c_str(), lid, seq_num, li.seq_num);
+    pthread_mutex_unlock(&lock_mutex);
+    return lock_protocol::RPCERR; // Wrong sequence number
   }
 
   // Mark the lock as free, but do not assign it yet
   li.state = FREE;
   li.clt_id = "";
-  free_locks.push_back(lid);
-  li.retryer_sent_to.clear(); // reset the retryer sent to client id
+  free_locks.push_back(lid); // Add to free locks list
   printf("lock %llu is now free\n", lid);
   printf("client %s is releasing lock %016llx\n", clt_id.c_str(), lid);
   pthread_cond_signal(retry_cv);
