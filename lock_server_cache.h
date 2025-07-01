@@ -6,10 +6,12 @@
 #include "rpc.h"
 #include "lock_server.h"
 
+#include "rsm.h"
 
 
 class lock_server_cache {
  private:
+  class rsm *rsm;
   enum lock_state {FREE, ACQUIRED};
   struct lock_info {
     std::string clt_id;
@@ -37,7 +39,7 @@ class lock_server_cache {
   std::map<std::string, rpcc*> client_connections;
 
  public:
-  lock_server_cache();
+  lock_server_cache(class rsm *rsm = 0);
   lock_protocol::status stat(lock_protocol::lockid_t, int &);
   lock_protocol::status acquire(std::string clt_id, int seq_num, lock_protocol::lockid_t, int &);
   lock_protocol::status release(std::string clt_id, int seq_num, lock_protocol::lockid_t, int &);
