@@ -80,6 +80,7 @@ class lock_client_cache : public lock_client {
     lock_state state;
     pthread_cond_t *cond;
     int sequence_number;
+    pthread_t owner_thread; // thread that currently owns the lock
     std::list<pthread_t> waiting_threads;
     bool to_be_revoked;
     bool retry_received;
@@ -96,7 +97,7 @@ class lock_client_cache : public lock_client {
   std::map<lock_protocol::lockid_t, lock_info> lock_cache;
   pthread_mutex_t lock_mutex;
   pthread_cond_t *releaser_cv;
-  std::list<lock_protocol::lockid_t> revoke_queue;
+  std::list<lock_protocol::lockid_t> release_queue;
 
 
  public:
@@ -104,6 +105,7 @@ class lock_client_cache : public lock_client {
   lock_client_cache(std::string xdst, class lock_release_user *l = 0);
   virtual ~lock_client_cache() {};
   lock_protocol::status acquire(lock_protocol::lockid_t);
+  bool is_lock_in_release_queue(lock_protocol::lockid_t lid);
   void remove_pthread_from_waiting_threads(lock_client_cache::lock_info &li);
   void add_pthread_to_waiting_threads(lock_client_cache::lock_info &li);
   virtual lock_protocol::status release(lock_protocol::lockid_t);
@@ -116,3 +118,109 @@ class lock_client_cache : public lock_client {
 #endif
 
 
+
+/*
+acquire(lid){
+- check if thread is the topmost thread in the waiting list
+- if not, then add to waiting list if not already there else wait on condition variable
+- if yes, get lock status against lid
+- if lock is None:
+  - new seq num = old seq num + 1
+  - set lock state to Acquiring
+  - send RPC to server to acquire lock
+  - if RPC returns OK:
+    - if lock is in the release queue:
+      - set lock state to FREE
+      - trigger releaser thread
+    - else
+      - set lock state to Locked
+      - remove thread from waiting list
+  - if RPC returns RETRY:
+    - remove lock from cache so that status remains None
+- elif lock is Free:
+  - then grant the thread the lock
+  - set lock state to Locked
+- elif lock is Locked:
+  - put the thread to waiting
+- elif lock is Acquiring:
+  - this seems like an error, can't get to this point as thread can't be topmost
+- elif lock is Releasing:
+  - put the thread to waiting
+}
+
+relase(lid){
+- check if thread is the one that has the lock
+- if not then return error
+- if yes, get lock status against lid
+- if lock is None:
+  - return error "Lock was never acquired by client"
+- if lock is Free:
+  - return error "Lock is already free"
+- if lock is Locked:
+  - set lock state to Free
+  - remove thread from waiting list
+  - if lock is in the relase queue:
+    - trigger releaser thread
+  - else
+    - wake up any waiting threads
+- if lock is Acquiring:
+  - this should not be happening as thread can't be topmost
+  - return error "Lock is being acquired by another thread"
+- if lock is Releasing:
+  - return error "Lock is being released by another thread"
+}
+
+revoke(lid){
+- get lock status against lid
+if lock is None:
+  - return error "Lock was never acquired by client"
+- if lock is Free:
+  - trigger releaser thread, add lock to the release queue
+- if lock is Locked:
+  - wait for the lock to be released
+  - add lock to the release queue
+- if lock is acquiring:
+  - wait for the lock to be released
+  - add lock to the release queue
+- if lock is releasing:
+  - do nothing, wait for the releaser thread to release the lock
+}
+
+retry(lid){
+- get lock status against lid
+- if lock is None:
+  - call acquire(lid) to try to acquire the lock again
+- else if lock is Free:
+  - return error "Lock is already free"
+- else if lock is Locked:
+  - return error "Lock is already locked by another thread"
+- else if lock is Acquiring:
+  - 
+- if lock is any other status:
+  - return error "Something went wrong cache already knows about lock"
+}
+
+releaser(lid){
+- while release queue is not empty:
+  - get the first lock from the release queue
+  - get lock status against lid
+  - if lock is None:
+    - return error "Lock was never acquired by client"
+  - if lock is Free:
+    - set lock state to Releasing
+    - send RPC to server to release the lock
+    - if RPC returns OK:
+      - what to do with waiting threads?
+      - remove lock from cache
+      - remove lock from release queue
+    - else:
+      - set lock state to Free
+      - try again
+  - if lock is Locked:
+     - try again
+  - if lock is Acquiring:
+    - try again
+  - if lock is Releasing:
+    - this seems like an error, can't get to this point as thread can't be topmost
+}
+*/

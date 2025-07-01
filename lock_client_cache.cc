@@ -47,69 +47,97 @@ lock_client_cache::lock_client_cache(std::string xdst,
 lock_protocol::status
 lock_client_cache::acquire(lock_protocol::lockid_t lid)
 {
+  int ret;
   pthread_mutex_lock(&lock_mutex);
   printf("[client] %s request to acquire lock %016llx\n", this-> get_id().c_str(), lid);
   lock_info &li = lock_cache[lid]; // creates if not already present
   pthread_t tid = pthread_self();
-
-  // Add current thread to the waiting queue if not already in it
-  if (std::find(li.waiting_threads.begin(), li.waiting_threads.end(), tid) == li.waiting_threads.end()) {
-    li.waiting_threads.push_back(tid);
-  }
-
-  while (true) {
-    if (li.to_be_revoked){
-      printf("[client] %s lock %016llx is to be revoked, not acquiring lock and thread %lu going to sleep\n", this->get_id().c_str(), lid, tid);
-      pthread_cond_wait(li.cond, &lock_mutex);
-      continue;
+  add_pthread_to_waiting_threads(li);
+  // is pthread the topmost thread?
+  while (true){
+    if(li.waiting_threads.front() != tid){
+    // If not, add to waiting threads and wait
+    printf("[client] %s is not the topmost thread for lock %016llx, adding to waiting list\n", this->get_id().c_str(), lid);
+    pthread_cond_wait(li.cond, &lock_mutex);
+    continue; // retry acquiring the lock
+    printf("[client] %s woke up from waiting for lock %016llx\n", this->get_id().c_str(), lid);
     }
-    if (li.waiting_threads.front() != tid){
-      printf("[client] %s lock %016llx thread not the first one, not acquiring lock and thread %lu going to sleep\n", this->get_id().c_str(), lid, tid);
-      pthread_cond_wait(li.cond, &lock_mutex);
-      continue;
-    }
-    else {
-      if (li.state != NONE && li.state != FREE) {
-        printf("[client] %s lock %016llx state is %s which is neither FREE nor NONE, not acquiring lock and thread %lu going to sleep\n", this->get_id().c_str(), lid, this->get_state(li.state).c_str(), tid);
-        pthread_cond_wait(li.cond, &lock_mutex);
-        continue;
-      }
-      if (li.state == NONE) {
-        printf("[client] %s lock %016llx state is none, thread %lu ,acquiring lock from server\n", this->get_id().c_str(), lid, tid);
-        li.state = ACQUIRING;
-        li.retry_received = false;
-        pthread_mutex_unlock(&lock_mutex);
-        int r;
-        int ret = cl->call(lock_protocol::acquire, this->id, li.sequence_number++, lid, r);
-        pthread_mutex_lock(&lock_mutex);
-        if (ret == lock_protocol::OK) {
-          printf("[client] %s lock %016llx acquired by thread %lu\n", this->get_id().c_str(), lid, tid);
+    if (li.state == NONE){
+      li.sequence_number++;
+      li.state = ACQUIRING;
+      pthread_mutex_unlock(&lock_mutex);
+      printf("[client] %s sending acquire RPC for lock %016llx\n", this->get_id().c_str(), lid);
+      int r;
+      ret = cl->call(lock_protocol::acquire, this->id, li.sequence_number, lid, r);
+      pthread_mutex_lock(&lock_mutex);
+      if (ret == lock_protocol::OK) {
+        printf("[client] %s acquired lock %016llx\n", this->get_id().c_str(), lid);
+        // if lock in release queue, set state to FREE and trigger releaser thread
+        if (is_lock_in_release_queue(lid)) {
+          li.state = FREE;
+          printf("[client] %s lock %016llx is in release queue, setting state to FREE\n", this->get_id().c_str(), lid);
+          pthread_cond_signal(releaser_cv); // signal releaser thread
+        } 
+        else {
+          printf("[client] %s lock %016llx is not in release queue, setting state to LOCKED\n", this->get_id().c_str(), lid);
           li.state = LOCKED;
-          li.waiting_threads.pop_front();
-          pthread_mutex_unlock(&lock_mutex);
-          return lock_protocol::OK;
+          li.owner_thread = tid; // set owner thread
+          remove_pthread_from_waiting_threads(li); // remove this thread from waiting list
         }
-        else if (ret == lock_protocol::RETRY){
-          li.state = NONE;
-          printf("[client] %s lock %016llx retry received by thread %lu\n", this->get_id().c_str(), lid, tid);
-          while (!li.retry_received){
-            pthread_cond_wait(li.cond, &lock_mutex);
-            continue;
-          }
-          printf("[client] retry received for lock %016llx by thread %lu\n", lid, tid);
-        }
+        break;
       }
-      else if (li.state == FREE){
-        printf("[client] %s lock %016llx state is free, thread %lu is acquiring lock\n", this->get_id().c_str(), lid, tid);
-        li.state = LOCKED;
-        li.waiting_threads.pop_front();
+      else if (ret == lock_protocol::RETRY) {
+        printf("[client] %s failed to acquire lock %016llx, server sent RETRY\n", this->get_id().c_str(), lid);
+        li.state = NONE; // reset state to NONE
+        pthread_cond_wait(li.cond, &lock_mutex); // wait for next signal
+        continue; // retry acquiring the lock
+      }
+      else {
+        printf("[client] %s failed to acquire lock %016llx, server returned error\n", this->get_id().c_str(), lid);
+        li.state = NONE; // reset state to NONE
         pthread_mutex_unlock(&lock_mutex);
-        return lock_protocol::OK;
+        return ret; // return error
       }
     }
+    else if(li.state == FREE) {
+      printf("[client] %s lock %016llx is free, setting state to LOCKED\n", this->get_id().c_str(), lid);
+      // If lock is free, set state to LOCKED and return
+      li.state = LOCKED;
+      li.owner_thread = tid; // set owner thread
+      remove_pthread_from_waiting_threads(li); // remove this thread from waiting list
+      ret = lock_protocol::OK;
+      break;
+    }
+    else{
+      if (li.state == LOCKED) {
+      // If lock is already locked, wait for it to be released
+      printf("[client] %s lock %016llx is already locked, waiting\n", this->get_id().c_str(), lid);
+      pthread_cond_wait(li.cond, &lock_mutex);
+      continue; // retry acquiring the lock
+      }
+      else if (li.state == ACQUIRING ) {
+        // If lock is being acquired or released by another thread, wait
+        printf("[client] %s lock %016llx is being acquired by another thread, should not have reached this point\n", this->get_id().c_str(), lid);
+
+      }
+      else{
+        // If lock is in RELEASING state, wait for it to be released
+        printf("[client] %s lock %016llx is being released by another thread, waiting\n", this->get_id().c_str(), lid);
+      }
+
+      pthread_cond_wait(li.cond, &lock_mutex);
+      continue; // retry acquiring the lock
+    }
   }
+  pthread_mutex_unlock(&lock_mutex);
+  return ret;
 }
 
+
+bool lock_client_cache::is_lock_in_release_queue(lock_protocol::lockid_t lid)
+{
+  return std::find(release_queue.begin(), release_queue.end(), lid) != release_queue.end();
+}
 
 void lock_client_cache::remove_pthread_from_waiting_threads(lock_client_cache::lock_info &li)
 {
@@ -131,24 +159,41 @@ lock_client_cache::release(lock_protocol::lockid_t lid)
   printf("[client] %s request to release lock %016llx\n", this->get_id().c_str(), lid);
   pthread_mutex_lock(&lock_mutex);
   lock_info &li = lock_cache[lid];
+  pthread_t tid = pthread_self();
+  if (li.owner_thread != tid) {
+    printf("[client] %s cannot release lock %016llx, it is not the owner\n", this->get_id().c_str(), lid);
+    pthread_mutex_unlock(&lock_mutex);
+    return lock_protocol::RPCERR; // Not the owner
+  }
+  if (li.state == NONE) {
+    printf("[client] %s lock %016llx was never acquired, cannot release\n", this->get_id().c_str(), lid);
+    pthread_mutex_unlock(&lock_mutex);
+    return lock_protocol::RPCERR; // Lock was never acquired
+  }
+  if (li.state == FREE) {
+    printf("[client] %s lock %016llx is already free, cannot release\n", this->get_id().c_str(), lid);
+    pthread_mutex_unlock(&lock_mutex);
+    return lock_protocol::RPCERR; // Lock is already free
+  }
+  if (li.state == LOCKED){
+    printf("[client] %s releasing lock %016llx\n", this->get_id().c_str(), lid);
+    li.state = FREE;
+    // Remove this thread from the waiting list
+    remove_pthread_from_waiting_threads(li);
 
-  li.state = FREE;
-
-  // Remove this thread from the waiting list
-  remove_pthread_from_waiting_threads(li);
-
-  // Wake up other waiting threads
-  pthread_cond_broadcast(li.cond);
-
-  // If this lock was revoked, notify releaser thread
-  if (li.to_be_revoked) {
-    printf("[client] %s lock %016llx is to be revoked, notifying releaser\n", this->get_id().c_str(), lid);
-    pthread_cond_signal(releaser_cv);
+    if (is_lock_in_release_queue(lid)) {
+      // If this lock is in the release queue, remove it
+      printf("[client] %s lock %016llx is in release queue, triggering releaser thread \n", this->get_id().c_str(), lid);
+      pthread_cond_signal(releaser_cv);
+    } else {
+      // If not in release queue, add it to the release queue
+      printf("[client] %s lock %016llx is not in release queue, waking up other threads waiting for lock\n", this->get_id().c_str(), lid);
+        // Wake up other waiting threads
+      pthread_cond_broadcast(li.cond);
+    }
   }
 
   pthread_mutex_unlock(&lock_mutex);
-  printf("[client] %s released lock %016llx\n", this->get_id().c_str(), lid);
-
   return lock_protocol::OK;
 }
 
@@ -156,52 +201,41 @@ lock_client_cache::release(lock_protocol::lockid_t lid)
 void lock_client_cache::releaser()
 {
   printf("[client] %s releaser thread started\n", this->id.c_str());
+  pthread_mutex_lock(&lock_mutex);
   while (true) {
-    pthread_mutex_lock(&lock_mutex);
-    while (revoke_queue.empty()) {
+    while (release_queue.empty()) {
       pthread_cond_wait(releaser_cv, &lock_mutex);
     }
-    printf("[client] %s releaser thread awake\n", this->id.c_str());
-
-    std::list<lock_protocol::lockid_t>::iterator it = revoke_queue.begin();
-    while (it != revoke_queue.end()) {
-      lock_protocol::lockid_t lid = *it;
-      lock_info &li = lock_cache[lid];
-
-      printf("[client] %s checking lock %016llx to release to server\n", this->id.c_str(), lid);
-      printf("[client] %s lock %016llx state: %s, to_be_revoked: %d\n", this->id.c_str(), lid, this->get_state(li.state).c_str(), li.to_be_revoked);
-      if (li.state != LOCKED) {
-        // Can safely release this lock
-        printf("[client] %s releasing lock %016llx to server\n", this->id.c_str(), lid);
-        li.state = RELEASING;
-        pthread_mutex_unlock(&lock_mutex);
-
-        int r;
-        int ret = cl->call(lock_protocol::release, this->id, li.sequence_number++, lid, r);
-
-        pthread_mutex_lock(&lock_mutex);
-        if (ret == lock_protocol::OK) {
-          printf("[client] %s released lock %016llx to server\n", this->id.c_str(), lid);
-
-          li.to_be_revoked = false;
-          li.state = NONE;
-          it = revoke_queue.erase(it);  // remove from queue
-          pthread_cond_broadcast(li.cond); // wake up any waiting threads
-          continue;
-        } else {
-          std::cerr << "Error releasing lock " << lid << std::endl;
-        }
-      }
-
-      ++it;  // Move on to next lock if not FREE or failed
+    printf("[client] %s releaser thread woke up, processing release queue\n", this->id.c_str());
+    lock_protocol::lockid_t lid = release_queue.front();
+    lock_info &li = lock_cache[lid];
+    printf("[client] %s processing release for lock %016llx, current state: %s\n", 
+           this->id.c_str(), lid, get_state(li.state).c_str());
+    if (li.state == NONE) {
+      printf("[client] %s lock %016llx was never acquired, cannot release\n", this->id.c_str(), lid);
+      release_queue.pop_front();
+      continue; // Skip to next iteration
     }
-
-    pthread_mutex_unlock(&lock_mutex);
-    sleep(1); // optional: yield CPU and avoid tight loop
+    else if(li.state == FREE){
+      li.state = RELEASING;
+      pthread_mutex_unlock(&lock_mutex);
+      printf("[client] %s releasing lock %016llx, notifying lock release user\n", this->id.c_str(), lid);
+      int r;  
+      int ret = cl->call(lock_protocol::release, this->id, li.sequence_number, lid, r);
+      pthread_mutex_lock(&lock_mutex);
+      if (ret == lock_protocol::OK) {
+        printf("[client] %s successfully released lock %016llx\n", this->id.c_str(), lid);
+        release_queue.pop_front(); // Remove from release queue
+        li.state = NONE; // Reset state to NONE
+      }
+      else{
+        printf("[client] %s failed to release lock %016llx, server returned error\n", this->id.c_str(), lid);
+        li.state = FREE; // Reset state to FREE if release failed
+        continue; // Skip to next iteration
+      }
+    }
   }
 }
-
-
 
 rlock_protocol::status
 lock_client_cache::revoke(lock_protocol::lockid_t lid, int &r)
@@ -209,9 +243,22 @@ lock_client_cache::revoke(lock_protocol::lockid_t lid, int &r)
   printf("[client] %s revoke lock %016llx\n", this->id.c_str(), lid);
   pthread_mutex_lock(&lock_mutex);
   lock_info &li = lock_cache[lid];
-  li.to_be_revoked = true;
-  if (std::find(revoke_queue.begin(), revoke_queue.end(), lid) == revoke_queue.end()) {
-    revoke_queue.push_back(lid);
+  if (li.state == NONE) {
+    printf("[client] %s lock %016llx is already free, nothing to revoke\n", this->id.c_str(), lid);
+    pthread_mutex_unlock(&lock_mutex);
+    r = rlock_protocol::OK;
+    return rlock_protocol::OK; // Lock is already free
+  }
+  else{
+    // add to release queue if not already in it
+    if (!is_lock_in_release_queue(lid)) {
+      printf("[client] %s lock %016llx is not in release queue, adding it\n", this->id.c_str(), lid);
+      release_queue.push_back(lid);
+    }
+    if (li.state == FREE){
+      printf("[client] %s lock %016llx is free, signalling releaser thread\n", this->id.c_str(), lid);
+      pthread_cond_signal(releaser_cv); // Signal the releaser thread
+    }
   }
 
   printf("[client] %s lock %016llx is free, signalling releaser\n", this-> id.c_str(), lid);
@@ -229,16 +276,20 @@ lock_client_cache::retry(lock_protocol::lockid_t lid, int &r)
 {
   printf("[client] %s retry lock %016llx\n", this->id.c_str(), lid);
   pthread_mutex_lock(&lock_mutex);
-  if (lock_cache.find(lid) == lock_cache.end()) {
-    printf("[client] %s lock %016llx not found\n", this->id.c_str(), lid);
-    pthread_mutex_unlock(&lock_mutex);
-    return rlock_protocol::RPCERR;
-  }
 
   lock_info &li = lock_cache[lid];
-  li.retry_received = true;
-  pthread_cond_broadcast(li.cond);
-  pthread_mutex_unlock(&lock_mutex);
+
+  if (li.state==NONE){
+    if (!li.waiting_threads.empty()) {
+      // If there are waiting threads, wake them up
+      printf("[client] %s lock %016llx is NONE, waking up waiting threads\n", this->id.c_str(), lid);
+      pthread_cond_broadcast(li.cond);
+      pthread_mutex_unlock(&lock_mutex);
+    } else {
+      pthread_mutex_unlock(&lock_mutex);
+      acquire(lid); // Try to acquire the lock again
+    }
+  }
   r = rlock_protocol::OK;
   return rlock_protocol::OK;
 }
