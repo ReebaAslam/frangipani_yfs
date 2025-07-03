@@ -143,26 +143,27 @@ rsm::reg1(int proc, handler *h)
 
 // The recovery thread runs this function
 void
-rsm::recovery()
-{
-  bool r = false;
+rsm::recovery() {
+    assert(pthread_mutex_lock(&rsm_mutex) == 0);
 
-  assert(pthread_mutex_lock(&rsm_mutex)==0);
+    while (1) {
+        while (!cfg->ismember(cfg->myaddr())) {
+            inviewchange = true;
 
-  while (1) {
-    while (!cfg->ismember(cfg->myaddr())) {
-      if (join(primary)) {
-	printf("recovery: joined\n");
-      } else {
-  set_primary();
-      }
+            if (join(primary)) {
+                printf("recovery: joined\n");
+            } else {
+                assert(pthread_mutex_unlock(&rsm_mutex) == 0);
+                sleep(30); // XXX make another node in cfg primary?
+                assert(pthread_mutex_lock(&rsm_mutex) == 0);
+            }
+        }
+
+        inviewchange = false;
+        printf("recovery: go to sleep %d %d\n", insync, inviewchange);
+        pthread_cond_wait(&recovery_cond, &rsm_mutex);
     }
-
-    if (r) inviewchange = false;
-    printf("recovery: go to sleep %d %d\n", insync, inviewchange);
-    pthread_cond_wait(&recovery_cond, &rsm_mutex);
-  }
-  assert(pthread_mutex_unlock(&rsm_mutex)==0);
+    assert(pthread_mutex_unlock(&rsm_mutex) == 0);
 }
 
 bool
@@ -294,6 +295,59 @@ rsm::client_invoke(int procno, std::string req, std::string &r)
 {
   int ret = rsm_protocol::OK;
   // For lab 8
+  pthread_mutex_lock(&rsm_mutex);
+  if (inviewchange){
+    printf("client_invoke: in view change, returning BUSY\n");
+    pthread_mutex_unlock(&rsm_mutex);
+    return rsm_client_protocol::BUSY; 
+  }
+  pthread_mutex_unlock(&rsm_mutex);
+  if (!amiprimary()) {
+    printf("client_invoke: not primary, returning NOTPRIMARY\n");
+    return rsm_client_protocol::NOTPRIMARY;
+  }
+  
+  pthread_mutex_lock(&invoke_mutex);
+
+  // get current viewstamp
+  viewstamp vs = myvs;
+
+  // invoke the request on all members of the replicated state machine
+  // get all members of the current view
+  std::vector<std::string> members = cfg->get_curview();
+  auto it = members.begin();
+  while (it != members.end()) {
+    std::string m = *it;
+    if (m == cfg->myaddr()) {
+      // skip myself
+      it++;
+      continue;
+    }
+    handle h(m);
+    if (h.get_rpcc() == 0) {
+      printf("client_invoke: %s not reachable\n", m.c_str());
+    }
+    else {
+      int dummy;
+      ret = h.get_rpcc()->call(rsm_protocol::invoke, procno, vs, req, dummy, rpcc::to(1000));
+      if (ret != rsm_protocol::OK) {
+        printf("client_invoke: %s failed %d\n", m.c_str(), ret);
+        // TODO: initiate a view change
+        pthread_mutex_unlock(&invoke_mutex);
+        return rsm_client_protocol::BUSY;
+      }
+    }
+    it++;
+  }
+  execute(procno, req); // execute the request on the primary
+  
+  pthread_mutex_lock(&rsm_mutex);
+  last_myvs = myvs;
+  // increment sequence number
+  myvs.seqno++;  
+  pthread_mutex_unlock(&rsm_mutex);
+
+  pthread_mutex_unlock(&invoke_mutex);
   return ret;
 }
 
@@ -308,6 +362,28 @@ rsm_protocol::status
 rsm::invoke(int proc, viewstamp vs, std::string req, int &dummy)
 {
   rsm_protocol::status ret = rsm_protocol::OK;
+  pthread_mutex_lock(&rsm_mutex);
+  if (inviewchange) {
+    printf("invoke: in view change, returning BUSY\n");
+    return rsm_protocol::BUSY; 
+  }
+  pthread_mutex_unlock(&rsm_mutex);
+  if (amiprimary()) {
+    printf("invoke: I am primary, ignoring invoke\n");
+    pthread_mutex_unlock(&rsm_mutex);
+    return rsm_protocol::ERR; 
+  }
+  // check if the viewstamp is newer than the last one
+  if (!(vs > last_myvs)){
+    printf("invoke: viewstamp (%d,%d) <= myvs (%d,%d), ignoring\n", 
+     vs.vid, vs.seqno, myvs.vid, myvs.seqno);
+    pthread_mutex_unlock(&rsm_mutex);
+    return rsm_protocol::ERR; 
+  }
+  last_myvs = vs;
+  myvs = vs; // update my viewstamp to the one received
+  myvs.seqno++; // increment sequence number
+  execute(proc, req); // execute the request on the replica
   // For lab 8
   return ret;
 }
@@ -330,7 +406,7 @@ rsm::transferreq(std::string src, viewstamp last, rsm_protocol::transferres &r)
 }
 
 /**
-  * RPC handler: Send back the local node's latest viewstamp
+  * RPC handler: Send back the loctal node's latest viewstamp
   */
 rsm_protocol::status
 rsm::transferdonereq(std::string m, int &r)

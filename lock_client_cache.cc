@@ -41,6 +41,7 @@ lock_client_cache::lock_client_cache(std::string xdst,
   releaser_cv = new pthread_cond_t;
   pthread_cond_init(releaser_cv, NULL);
   pthread_mutex_init(&lock_mutex, NULL);
+  rsmcl = new rsm_client(xdst);
 
 }
 
@@ -80,7 +81,7 @@ lock_client_cache::acquire(lock_protocol::lockid_t lid)
         li.retry_received = false;
         pthread_mutex_unlock(&lock_mutex);
         int r;
-        int ret = cl->call(lock_protocol::acquire, this->id, li.sequence_number++, lid, r);
+        int ret = rsmcl->call(lock_protocol::acquire, this->id, li.sequence_number++, lid, r);
         pthread_mutex_lock(&lock_mutex);
         if (ret == lock_protocol::OK) {
           printf("[client] %s lock %016llx acquired by thread %lu\n", this->get_id().c_str(), lid, tid);
@@ -178,7 +179,7 @@ void lock_client_cache::releaser()
 
         lu -> dorelease(lid); // Notify the user that the lock is being released
         int r;
-        int ret = cl->call(lock_protocol::release, this->id, li.sequence_number++, lid, r);
+        int ret = rsmcl->call(lock_protocol::release, this->id, li.sequence_number++, lid, r);
 
         pthread_mutex_lock(&lock_mutex);
         if (ret == lock_protocol::OK) {
