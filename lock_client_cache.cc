@@ -215,13 +215,7 @@ lock_client_cache::retry(lock_protocol::lockid_t lid, int seq_num, int &r)
   printf("[client] %s retry lock %016llx\n", this->id.c_str(), lid);
   pthread_mutex_lock(&lock_cache_mutex);
   lock_info &li = lock_cache[lid];
-  std::list<pthread_t> waiting_threads = li.waiting_threads;
-  //print waiting threads
   pthread_mutex_unlock(&lock_cache_mutex);
-
-  if (waiting_threads.empty()) {
-    // create a new thread and call acquire
-    }
 
   printf("[client] %s broadcasting condition for lock %016llx\n", this->id.c_str(), lid);
   pthread_cond_broadcast(li.cond); // Notify all waiting threads on this lock
