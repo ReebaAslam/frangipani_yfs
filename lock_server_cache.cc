@@ -135,15 +135,17 @@ lock_server_cache::revoker()
     li.revoke_sent = true; // Mark revoke as sent
     pthread_mutex_unlock(&revoke_mutex);
 
-    printf("lock_server_cache::revoker: sending revoke signal for lock %llu to client %s with sequence number %d\n", 
-           lock_id, clt_info.clt_id.c_str(), clt_info.seq_num);
-    rpcc* cl = get_client_connection(clt_info.clt_id);
-    int r;  
-    int ret = cl->call(rlock_protocol::revoke, lock_id, clt_info.seq_num, r);
-    if (ret != rlock_protocol::OK) {
-      fprintf(stderr, "lock_server_cache::revoker: failed to send revoke to %s for lock %llu\n", clt_info.clt_id.c_str(), lock_id);
-    } else {
-      printf("lock_server_cache::revoker: sent revoke to %s for lock %llu\n", clt_info.clt_id.c_str(), lock_id);
+    if (rsm->amiprimary()){
+        printf("lock_server_cache::revoker: sending revoke signal for lock %llu to client %s with sequence number %d\n", 
+            lock_id, clt_info.clt_id.c_str(), clt_info.seq_num);
+        rpcc* cl = get_client_connection(clt_info.clt_id);
+        int r;  
+        int ret = cl->call(rlock_protocol::revoke, lock_id, clt_info.seq_num, r);
+        if (ret != rlock_protocol::OK) {
+        fprintf(stderr, "lock_server_cache::revoker: failed to send revoke to %s for lock %llu\n", clt_info.clt_id.c_str(), lock_id);
+        } else {
+        printf("lock_server_cache::revoker: sent revoke to %s for lock %llu\n", clt_info.clt_id.c_str(), lock_id);
+        }
     }
   }
 }
@@ -224,7 +226,8 @@ lock_server_cache::retryer()
         printf("lock_server_cache::retryer: no waiting clients for lock %llu\n", lock_id);
         continue; // No clients waiting for this lock
     }
-    else {
+    
+    else if (rsm->amiprimary()) {
         // Notify the first waiting client
         client_info clt_info = waiting_clients.front();
         waiting_clients.pop_front();
